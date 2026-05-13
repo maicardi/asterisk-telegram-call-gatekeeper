@@ -1,0 +1,89 @@
+; /etc/asterisk/extensions.conf example
+
+[from-iliad]
+exten => _X.,1,NoOp(Chiamata da ${CALLERID(num)} verso ${EXTEN})
+ same => n,Set(DECISION=${SHELL(/usr/local/bin/asterisk_decidi_azione.sh "${CALLERID(num)}")})
+ same => n,Set(AZIONE=${CUT(DECISION,|,1)})
+ same => n,Set(PROMPT=${CUT(DECISION,|,2)})
+ same => n,Set(CATEGORIA=${CUT(DECISION,|,3)})
+
+ ; Do not FILTER(PROMPT): prompt file names may contain dashes.
+ same => n,Set(AZIONE=${FILTER(A-Z,${AZIONE})})
+ same => n,Set(CATEGORIA=${FILTER(A-Z,${CATEGORIA})})
+
+ same => n,NoOp(Decisione=${DECISION})
+ same => n,NoOp(Azione=${AZIONE} Prompt=${PROMPT} Categoria=${CATEGORIA})
+
+ same => n,GotoIf($["${AZIONE}" = "BLACKLIST"]?blacklist,s,1)
+ same => n,GotoIf($["${AZIONE}" = "SEGRETERIA"]?segreteria,s,1)
+ same => n,GotoIf($["${AZIONE}" = "OCCUPATO"]?occupato,s,1)
+ same => n,GotoIf($["${AZIONE}" = "RIFIUTA"]?rifiuta,s,1)
+ same => n,GotoIf($["${AZIONE}" = "MUTO"]?muto,s,1)
+ same => n,Goto(notifica,s,1)
+
+exten => s,1,NoOp(Chiamata senza DID esplicito da ${CALLERID(num)})
+ same => n,Set(DECISION=${SHELL(/usr/local/bin/asterisk_decidi_azione.sh "${CALLERID(num)}")})
+ same => n,Set(AZIONE=${CUT(DECISION,|,1)})
+ same => n,Set(PROMPT=${CUT(DECISION,|,2)})
+ same => n,Set(CATEGORIA=${CUT(DECISION,|,3)})
+ same => n,Set(AZIONE=${FILTER(A-Z,${AZIONE})})
+ same => n,Set(CATEGORIA=${FILTER(A-Z,${CATEGORIA})})
+ same => n,GotoIf($["${AZIONE}" = "BLACKLIST"]?blacklist,s,1)
+ same => n,GotoIf($["${AZIONE}" = "SEGRETERIA"]?segreteria,s,1)
+ same => n,GotoIf($["${AZIONE}" = "OCCUPATO"]?occupato,s,1)
+ same => n,GotoIf($["${AZIONE}" = "RIFIUTA"]?rifiuta,s,1)
+ same => n,GotoIf($["${AZIONE}" = "MUTO"]?muto,s,1)
+ same => n,Goto(notifica,s,1)
+
+[notifica]
+exten => s,1,NoOp(Notifica + early media per ${CALLERID(num)} categoria ${CATEGORIA})
+ same => n,System(/bin/bash /usr/local/bin/notifica_chiamata_telegram.sh "${CALLERID(num)}" "${CATEGORIA}")
+ same => n,Progress()
+ same => n,GotoIf($["${PROMPT}" = "none"]?skip_prompt)
+ same => n,Playback(${PROMPT},noanswer)
+ same => n(skip_prompt),Hangup(17)
+
+[occupato]
+exten => s,1,NoOp(Modalità occupato per ${CALLERID(num)} categoria ${CATEGORIA})
+ same => n,System(/bin/bash /usr/local/bin/notifica_chiamata_telegram.sh "${CALLERID(num)}" "${CATEGORIA}")
+ same => n,Progress()
+ same => n,GotoIf($["${PROMPT}" = "none"]?skip_prompt)
+ same => n,Playback(${PROMPT},noanswer)
+ same => n(skip_prompt),Hangup(17)
+
+[rifiuta]
+exten => s,1,NoOp(Modalità rifiuta per ${CALLERID(num)} categoria ${CATEGORIA})
+ same => n,System(/bin/bash /usr/local/bin/notifica_chiamata_telegram.sh "${CALLERID(num)}" "${CATEGORIA}")
+ same => n,Progress()
+ same => n,GotoIf($["${PROMPT}" = "none"]?skip_prompt)
+ same => n,Playback(${PROMPT},noanswer)
+ same => n(skip_prompt),Hangup(21)
+
+[muto]
+exten => s,1,NoOp(Modalità muta per ${CALLERID(num)} categoria ${CATEGORIA})
+ same => n,System(/bin/bash /usr/local/bin/notifica_chiamata_telegram.sh "${CALLERID(num)}" "${CATEGORIA}")
+ same => n,Hangup(17)
+
+[blacklist]
+exten => s,1,NoOp(Numero in blacklist: ${CALLERID(num)})
+ same => n,System(/bin/bash /usr/local/bin/notifica_chiamata_telegram.sh "${CALLERID(num)}" "BLACKLIST")
+ same => n,Progress()
+ same => n,GotoIf($["${PROMPT}" = "none"]?skip_prompt)
+ same => n,Playback(${PROMPT},noanswer)
+ same => n(skip_prompt),Hangup(17)
+
+[segreteria]
+exten => s,1,NoOp(Segreteria attiva per ${CALLERID(num)} categoria ${CATEGORIA})
+ same => n,Answer()
+ same => n,Wait(1)
+ same => n,System(/bin/bash /usr/local/bin/notifica_chiamata_telegram.sh "${CALLERID(num)}" "${CATEGORIA}")
+ same => n,GotoIf($["${PROMPT}" = "none"]?skip_prompt)
+ same => n,Playback(${PROMPT})
+ same => n(skip_prompt),Playback(beep)
+ same => n,Set(MSGFILE=/var/spool/asterisk/voicemail-msg-${UNIQUEID}.wav)
+ same => n,Record(${MSGFILE},5,120,kq)
+ same => n,System(/bin/bash /usr/local/bin/invia_voicemail_telegram.sh "${CALLERID(num)}" "${MSGFILE}")
+ same => n,Hangup()
+
+exten => h,1,NoOp(Chiamata terminata, invio eventuale messaggio Telegram)
+ same => n,ExecIf($["${MSGFILE}" != ""]?System(/bin/bash /usr/local/bin/invia_voicemail_telegram.sh "${CALLERID(num)}" "${MSGFILE}"))
