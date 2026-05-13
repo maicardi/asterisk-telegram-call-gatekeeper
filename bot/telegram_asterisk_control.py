@@ -199,6 +199,143 @@ def display_prompt(prompt):
     return prompt
 
 
+def html_escape(value):
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def lookup_contact_name(number):
+    """
+    Restituisce il nome del contatto usando /usr/local/bin/lookup_contatto.sh.
+    Se il numero non è in rubrica, restituisce stringa vuota.
+    """
+    try:
+        result = subprocess.run(
+            ["/usr/local/bin/lookup_contatto.sh", number],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2,
+        )
+
+        name = result.stdout.strip()
+
+        if not name or name == number:
+            return ""
+
+        return name
+
+    except Exception:
+        return ""
+
+
+def format_number_list_with_names(numbers):
+    if not numbers:
+        return "Lista vuota."
+
+    lines = []
+
+    for number in numbers:
+        name = lookup_contact_name(number)
+
+        if name:
+            lines.append(f"<code>{number}</code> — <b>{html_escape(name)}</b>")
+        else:
+            lines.append(f"<code>{number}</code>")
+
+    return "\n".join(lines)
+
+
+def upsert_phonebook_contact(number, name):
+    """
+    Inserisce o aggiorna /opt/asterisk-phonebook/contacts.tsv.
+    Mantiene il formato:
+    numero<TAB>nome
+    """
+    phonebook = Path("/opt/asterisk-phonebook/contacts.tsv")
+    phonebook.parent.mkdir(parents=True, exist_ok=True)
+
+    rows = []
+
+    if phonebook.exists():
+        for line in phonebook.read_text(encoding="utf-8", errors="ignore").splitlines():
+            if not line.strip():
+                continue
+
+            parts = line.split("\t", 1)
+
+            if len(parts) == 2:
+                existing_number, existing_name = parts
+            else:
+                existing_number, existing_name = parts[0], ""
+
+            if existing_number != number:
+                rows.append((existing_number, existing_name))
+
+    rows.append((number, name))
+
+    tmp = phonebook.with_suffix(".tmp")
+    tmp.write_text(
+        "\n".join(f"{n}\t{name}" for n, name in sorted(rows)) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(tmp, phonebook)
+
+
+def add_contact_keyboard(number):
+    return [
+        [
+            {"text": "👤 Normale", "callback_data": f"addcontact:normal:{number}"},
+        ],
+        [
+            {"text": "⭐ VIP", "callback_data": f"addcontact:vip:{number}"},
+            {"text": "❤️ Amore", "callback_data": f"addcontact:amore:{number}"},
+        ],
+        [
+            {"text": "👨‍👩‍👧 Famiglia", "callback_data": f"addcontact:famiglia:{number}"},
+            {"text": "⛔ Blacklist", "callback_data": f"addcontact:blacklist:{number}"},
+        ],
+        [
+            {"text": "❌ Annulla", "callback_data": "addcontact:cancel"},
+        ],
+    ]
+
+
+def handle_shared_contact(msg):
+    contact = msg.get("contact")
+
+    if not contact:
+        return None
+
+    raw_phone = contact.get("phone_number", "")
+    number = normalize_number(raw_phone)
+
+    if not number or len(number) < 7:
+        return "Contatto ricevuto, ma numero non valido."
+
+    first = (contact.get("first_name") or "").strip()
+    last = (contact.get("last_name") or "").strip()
+    name = " ".join(x for x in [first, last] if x).strip() or number
+
+    upsert_phonebook_contact(number, name)
+
+    return {
+        "number": number,
+        "name": name,
+        "text": (
+            "👤 <b>Contatto ricevuto</b>\n\n"
+            f"Nome: <b>{html_escape(name)}</b>\n"
+            f"Numero: <code>{number}</code>\n\n"
+            "Come vuoi classificarlo?"
+        ),
+        "keyboard": add_contact_keyboard(number),
+    }
+
+
 # =========================
 # LISTE NUMERI
 # =========================
@@ -238,16 +375,21 @@ def blacklist_list():
     return read_number_list(BLACKLIST_PATH)
 
 
+def remove_number_from_special_lists(number):
+    for path in [VIP_PATH, AMORE_PATH, FAMIGLIA_PATH, BLACKLIST_PATH]:
+        numbers = read_number_list(path)
+        new_numbers = [n for n in numbers if n != number]
+        if new_numbers != numbers:
+            write_number_list(path, new_numbers)
+
+
 def handle_number_list_command(parts, label, path, emoji):
     numbers = read_number_list(path)
 
     if len(parts) == 1:
-        if not numbers:
-            return f"{emoji} Lista <b>{label}</b> vuota."
-
         return (
             f"{emoji} <b>Lista {label}</b>\n\n"
-            + "\n".join(f"<code>{n}</code>" for n in numbers)
+            + format_number_list_with_names(numbers)
         )
 
     action = parts[1].lower()
@@ -557,6 +699,8 @@ def help_text():
         "<code>/status</code>\n"
         "Mostra configurazione attuale.\n\n"
 
+        "Puoi anche condividere un contatto Telegram al bot: il bot lo salva in rubrica e mostra i bottoni per classificarlo come normale, VIP, amore, famiglia o blacklist.\n\n"
+
         "<code>/modo notifica</code>\n"
         "Notifica Telegram + messaggio early media + occupato.\n\n"
 
@@ -835,6 +979,95 @@ def handle_callback_query(callback):
 
     answer_callback_query(callback_id)
 
+    if data == "addcontact:cancel":
+        edit_message_with_keyboard(
+            chat_id,
+            message_id,
+            "Operazione annullata.",
+            [[{"text": "⬅️ Menu", "callback_data": "menu:main"}]],
+        )
+        return
+
+    if data.startswith("addcontact:"):
+        parts = data.split(":", 2)
+
+        if len(parts) != 3:
+            edit_message_with_keyboard(
+                chat_id,
+                message_id,
+                "Comando non valido.",
+                [[{"text": "⬅️ Menu", "callback_data": "menu:main"}]],
+            )
+            return
+
+        list_name = parts[1]
+        number = normalize_number(parts[2])
+
+        targets = {
+            "vip": (VIP_PATH, "⭐ VIP"),
+            "amore": (AMORE_PATH, "❤️ Amore"),
+            "famiglia": (FAMIGLIA_PATH, "👨‍👩‍👧 Famiglia"),
+            "blacklist": (BLACKLIST_PATH, "⛔ Blacklist"),
+        }
+
+        if not number:
+            edit_message_with_keyboard(
+                chat_id,
+                message_id,
+                "Numero non valido.",
+                [[{"text": "⬅️ Menu", "callback_data": "menu:main"}]],
+            )
+            return
+
+        name = lookup_contact_name(number)
+        if name:
+            who = f"<b>{html_escape(name)}</b> (<code>{number}</code>)"
+        else:
+            who = f"<code>{number}</code>"
+
+        if list_name == "normal":
+            remove_number_from_special_lists(number)
+
+            edit_message_with_keyboard(
+                chat_id,
+                message_id,
+                f"✅ Salvato {who} come 👤 <b>contatto normale</b>.\n\nNon è presente in VIP, amore, famiglia o blacklist.",
+                [
+                    [{"text": "⬅️ Menu", "callback_data": "menu:main"}],
+                ],
+            )
+            return
+
+        if list_name not in targets:
+            edit_message_with_keyboard(
+                chat_id,
+                message_id,
+                "Lista non valida.",
+                [[{"text": "⬅️ Menu", "callback_data": "menu:main"}]],
+            )
+            return
+
+        # Un contatto speciale sta in una sola lista speciale alla volta.
+        remove_number_from_special_lists(number)
+
+        path, label = targets[list_name]
+        numbers = read_number_list(path)
+
+        if number not in numbers:
+            numbers.append(number)
+            write_number_list(path, numbers)
+
+        edit_message_with_keyboard(
+            chat_id,
+            message_id,
+            f"✅ Aggiunto {who} a {label}.",
+            [
+                [{"text": "📋 Mostra lista", "callback_data": f"listshow:{list_name}"}],
+                [{"text": "⬅️ Menu", "callback_data": "menu:main"}],
+            ],
+        )
+        return
+
     if data == "menu:main":
         edit_message_with_keyboard(
             chat_id,
@@ -954,10 +1187,7 @@ def handle_callback_query(callback):
             numbers = []
             title = "Lista"
 
-        if numbers:
-            body = "\n".join(f"<code>{n}</code>" for n in numbers)
-        else:
-            body = "Lista vuota."
+        body = format_number_list_with_names(numbers)
 
         edit_message_with_keyboard(
             chat_id,
@@ -1067,6 +1297,20 @@ def main():
 
                 if chat_id != ALLOWED_CHAT_ID:
                     send_message(chat_id, "⛔ Non autorizzato.", parse_mode=None)
+                    continue
+
+                contact_reply = handle_shared_contact(msg)
+
+                if isinstance(contact_reply, dict):
+                    send_message_with_keyboard(
+                        chat_id,
+                        contact_reply["text"],
+                        contact_reply["keyboard"],
+                    )
+                    continue
+
+                if contact_reply:
+                    send_message(chat_id, contact_reply)
                     continue
 
                 upload_reply = handle_audio_upload(msg)
