@@ -10,6 +10,9 @@ It can:
 - selectively answer and record voicemail;
 - normalize voicemail volume before sending it to Telegram;
 - manage VIP, amore, famiglia and blacklist lists;
+- save shared Telegram contacts into a local phonebook;
+- classify shared contacts using inline Telegram buttons: normal, VIP, amore, famiglia or blacklist;
+- display contact names next to numbers in lists;
 - use different audio prompts for each category;
 - upload new prompt audio files through Telegram;
 - control behaviour from a Telegram bot with inline buttons.
@@ -52,15 +55,15 @@ Telephony behaviour depends heavily on your SIP provider and mobile operator.
 │   ├── amore.txt.example
 │   ├── famiglia.txt.example
 │   └── blacklist.txt.example
-└── systemd/
-    └── telegram-asterisk-control.service
+├── systemd/
+│   └── telegram-asterisk-control.service
+└── docs/
+    └── dialplan-notes.md
 ```
 
 ## 1. Install Asterisk on Raspberry Pi OS / Debian 12
 
 Raspberry Pi OS Bookworm / Debian 12 may not always provide an installable `asterisk` package through `apt`, depending on architecture and repositories. This guide uses Asterisk from source.
-
-Asterisk provides official source downloads for supported releases. At the time this project was packaged, Asterisk 22 is an LTS branch and the `asterisk-22-current.tar.gz` URL points to the latest 22.x release.
 
 ### Install build dependencies
 
@@ -217,12 +220,6 @@ BOT_TOKEN="1234567890:ABC..."
 curl -s "https://api.telegram.org/bot${BOT_TOKEN}/getMe"
 ```
 
-You should see:
-
-```json
-{"ok":true,...}
-```
-
 Send `/start` to the bot and get your chat ID:
 
 ```bash
@@ -283,7 +280,26 @@ Lists:
 /blacklist del 32123455678
 ```
 
-Prompts:
+List output shows the phone number plus the contact name, if present in `/opt/asterisk-phonebook/contacts.tsv`.
+
+## 8. Shared Telegram contacts
+
+From a smartphone, share a Telegram contact with the bot.
+
+The bot will:
+
+1. normalize the phone number;
+2. save/update it in `/opt/asterisk-phonebook/contacts.tsv`;
+3. show inline buttons to classify it as:
+   - normal;
+   - VIP;
+   - amore;
+   - famiglia;
+   - blacklist.
+
+Choosing `normal` removes the number from all special lists but keeps it in the phonebook.
+
+## 9. Prompts
 
 ```text
 /prompt
@@ -316,7 +332,7 @@ custom/segreteria-amore
 
 The bot output hides the `custom/` prefix for readability.
 
-## 8. Behaviour logic
+## 10. Behaviour logic
 
 Priority order:
 
@@ -344,7 +360,7 @@ blacklist → busy
 
 If `VIP_MODE=off`, the global `MODE` applies to everyone except blacklist.
 
-## 9. Create audio prompts manually
+## 11. Create audio prompts manually
 
 Install tools:
 
@@ -378,7 +394,7 @@ Permissions:
 sudo chmod 644 /var/lib/asterisk/sounds/custom/*.wav
 ```
 
-## 10. Phonebook / contact name lookup
+## 12. Phonebook / contact name lookup
 
 The phonebook file is:
 
@@ -406,7 +422,7 @@ sudo /usr/local/bin/importa_google_contacts_csv.py /tmp/contacts.csv
 
 The importer only reads Google-style `Phone X - Value` columns and ignores email-like fields.
 
-## 11. Debugging
+## 13. Debugging
 
 Asterisk console:
 
@@ -450,7 +466,7 @@ Syntax check:
 python3 -m py_compile /usr/local/bin/telegram_asterisk_control.py
 ```
 
-## 12. Security notes
+## 14. Security notes
 
 - Do not expose Asterisk SIP ports to the Internet unless you know what you are doing.
 - Keep this Raspberry behind your router if possible.
@@ -458,6 +474,6 @@ python3 -m py_compile /usr/local/bin/telegram_asterisk_control.py
 - Do not commit real contact lists.
 - Consider restricting SSH access and keeping the OS updated.
 
-## 13. License
+## 15. License
 
 MIT.
